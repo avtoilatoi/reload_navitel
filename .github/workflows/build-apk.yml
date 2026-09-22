@@ -43,11 +43,48 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Cấp quyền thực thi cho gradlew
+      - name: Kiểm tra cấu trúc & Định vị thư mục Gradle
+        id: locate_project
         run: |
-          chmod +x ./gradlew
+          echo "=== Danh sách tệp tin trong repository ==="
+          ls -la
+          
+          # Tìm vị trí file settings.gradle.kts hoặc settings.gradle
+          SETTINGS_PATH=$(find . -maxdepth 3 -name "settings.gradle*" | head -n 1)
+          
+          if [ -z "$SETTINGS_PATH" ]; then
+            echo "::error::Không tìm thấy settings.gradle.kts hoặc settings.gradle trong repository!"
+            echo "=========================================================================="
+            echo "NGUYÊN NHÂN: Repository trên GitHub chưa được push mã nguồn của ứng dụng."
+            echo "Hiện tại trong repo có thể chỉ có file workflow (.github/workflows) mà chưa có:"
+            echo "  - settings.gradle.kts"
+            echo "  - build.gradle.kts"
+            echo "  - app/"
+            echo "  - gradle/"
+            echo "HƯỚNG DẪN KHẮC PHỤC:"
+            echo "1. Từ giao diện AI Studio, chọn menu (3 chấm hoặc Export) -> 'Push to GitHub'"
+            echo "2. Hoặc tải ZIP về máy, giải nén và commit toàn bộ các file vào repository này."
+            echo "=========================================================================="
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS_PATH")
+          echo "Đã tìm thấy dự án Gradle tại: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
+
+      - name: Cấp quyền thực thi cho gradlew
+        working-directory: ${{ steps.locate_project.outputs.project_dir }}
+        run: |
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+          else
+            echo "Chưa có gradlew cục bộ, đang tạo gradle wrapper..."
+            gradle wrapper
+            chmod +x ./gradlew
+          fi
 
       - name: Khởi tạo tệp môi trường .env
+        working-directory: ${{ steps.locate_project.outputs.project_dir }}
         run: |
           if [ -f .env.example ]; then
             cp .env.example .env
@@ -56,6 +93,7 @@ jobs:
           fi
 
       - name: Khôi phục debug.keystore
+        working-directory: ${{ steps.locate_project.outputs.project_dir }}
         run: |
           if [ -f debug.keystore.base64 ]; then
             echo "Đang giải mã debug.keystore từ base64..."
@@ -67,27 +105,29 @@ jobs:
 
       - name: Build Debug APK
         if: "${{ github.event.inputs.build_type != 'release' }}"
+        working-directory: ${{ steps.locate_project.outputs.project_dir }}
         run: |
           ./gradlew :app:assembleDebug --stacktrace
 
       - name: Build Release APK
         if: "${{ github.event.inputs.build_type == 'release' }}"
+        working-directory: ${{ steps.locate_project.outputs.project_dir }}
         run: |
-          # Nếu không có upload key tùy chỉnh, build bằng debug signing hoặc assembleRelease
           ./gradlew :app:assembleRelease --stacktrace || ./gradlew :app:assembleDebug --stacktrace
 
       - name: Xác định vị trí tệp APK
         id: find_apk
+        working-directory: ${{ steps.locate_project.outputs.project_dir }}
         run: |
           APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
           echo "Tìm thấy APK: $APK_PATH"
-          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "apk_path=${{ steps.locate_project.outputs.project_dir }}/$APK_PATH" >> $GITHUB_OUTPUT
 
       - name: Tải lên Artifacts (Tải APK trực tiếp từ GitHub)
         uses: actions/upload-artifact@v4
         with:
           name: Navitel-AutoReload-PIP-APK
-          path: app/build/outputs/apk/**/*.apk
+          path: ${{ steps.locate_project.outputs.project_dir }}/app/build/outputs/apk/**/*.apk
           retention-days: 30
 
       - name: Tạo GitHub Release & Đính kèm APK (Nếu tạo tag v*)
