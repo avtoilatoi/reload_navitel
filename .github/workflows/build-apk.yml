@@ -1,0 +1,107 @@
+name: Build Android APK & Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Loại build (debug hoặc release)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cài đặt JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Cấp quyền thực thi cho gradlew
+        run: |
+          chmod +x ./gradlew
+
+      - name: Khởi tạo tệp môi trường .env
+        run: |
+          if [ -f .env.example ]; then
+            cp .env.example .env
+          else
+            touch .env
+          fi
+
+      - name: Khôi phục debug.keystore
+        run: |
+          if [ -f debug.keystore.base64 ]; then
+            echo "Đang giải mã debug.keystore từ base64..."
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f debug.keystore ]; then
+            echo "Đang tạo mới debug.keystore..."
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Build Debug APK
+        if: "${{ github.event.inputs.build_type != 'release' }}"
+        run: |
+          ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Build Release APK
+        if: "${{ github.event.inputs.build_type == 'release' }}"
+        run: |
+          # Nếu không có upload key tùy chỉnh, build bằng debug signing hoặc assembleRelease
+          ./gradlew :app:assembleRelease --stacktrace || ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Xác định vị trí tệp APK
+        id: find_apk
+        run: |
+          APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
+          echo "Tìm thấy APK: $APK_PATH"
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+
+      - name: Tải lên Artifacts (Tải APK trực tiếp từ GitHub)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Navitel-AutoReload-PIP-APK
+          path: app/build/outputs/apk/**/*.apk
+          retention-days: 30
+
+      - name: Tạo GitHub Release & Đính kèm APK (Nếu tạo tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.find_apk.outputs.apk_path }}
+          name: "Bản phát hành ${{ github.ref_name }}"
+          body: |
+            ## Navitel AutoReload PIP - Android Box Car
+            - Tự động tải lại Navitel khi có kết nối Internet
+            - Hỗ trợ màn hình PIP 2 với Display ID động
+            - Tải tệp `.apk` đính kèm bên dưới để cài đặt lên thiết bị Android Box.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

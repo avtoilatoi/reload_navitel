@@ -1,0 +1,6 @@
+{
+  "name": "Navitel AutoReload PIP",
+  "description": "Tự động tải lại Navitel trên màn hình PIP khi có kết nối Internet cho Android Box ô tô",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
