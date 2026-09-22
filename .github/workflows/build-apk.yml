@@ -3,14 +3,12 @@ name: Build Android APK & Release
 on:
   push:
     branches:
-      - main
-      - master
+      - '**'
     tags:
       - 'v*'
   pull_request:
     branches:
-      - main
-      - master
+      - '**'
   workflow_dispatch:
     inputs:
       build_type:
@@ -43,15 +41,14 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Kiểm tra & Tự động tạo tệp cấu hình Gradle nếu bị thiếu
-        id: locate_project
+      - name: Khởi tạo tệp cấu hình Gradle nếu thiếu
         run: |
-          echo "=== Danh sách tệp tin trong repository hiện tại ==="
+          echo "=== Kiểm tra danh sách tệp nguồn hiện tại ==="
           ls -la
           
-          # Tự động tạo settings.gradle.kts nếu bị thiếu khi commit lên repo
+          # 1. Tự động sinh settings.gradle.kts nếu repository chưa có
           if [ ! -f settings.gradle.kts ] && [ ! -f settings.gradle ]; then
-            echo "Phát hiện thiếu settings.gradle.kts! Tự động tạo tệp cấu hình..."
+            echo ">> Đang tạo settings.gradle.kts..."
             cat << 'EOF' > settings.gradle.kts
 pluginManagement {
   repositories {
@@ -83,9 +80,9 @@ include(":app")
 EOF
           fi
 
-          # Tự động tạo build.gradle.kts gốc nếu bị thiếu
+          # 2. Tự động sinh build.gradle.kts gốc nếu repository chưa có
           if [ ! -f build.gradle.kts ] && [ ! -f build.gradle ]; then
-            echo "Phát hiện thiếu build.gradle.kts gốc! Tự động tạo tệp cấu hình..."
+            echo ">> Đang tạo build.gradle.kts..."
             cat << 'EOF' > build.gradle.kts
 plugins {
   alias(libs.plugins.android.application) apply false
@@ -98,41 +95,58 @@ plugins {
 EOF
           fi
 
-          # Tự động tạo gradle.properties nếu bị thiếu
+          # 3. Tự động sinh gradle.properties nếu chưa có
           if [ ! -f gradle.properties ]; then
-            echo "Tạo tệp gradle.properties..."
+            echo ">> Đang tạo gradle.properties..."
             cat << 'EOF' > gradle.properties
 org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
 org.gradle.parallel=true
 kotlin.code.style=official
 android.nonTransitiveRClass=true
+org.gradle.caching=true
+org.gradle.configuration-cache=true
+googleServices.missing.passthrough=true
 EOF
           fi
 
-          echo "project_dir=." >> $GITHUB_OUTPUT
-
-      - name: Cấp quyền thực thi cho gradlew
-        working-directory: ${{ steps.locate_project.outputs.project_dir }}
-        run: |
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-          else
-            echo "Chưa có gradlew cục bộ, đang tạo gradle wrapper..."
-            gradle wrapper
-            chmod +x ./gradlew
+          # 4. Đảm bảo có thư mục gradle/wrapper và file gradle-wrapper.properties
+          mkdir -p gradle/wrapper
+          if [ ! -f gradle/wrapper/gradle-wrapper.properties ]; then
+            echo ">> Đang tạo gradle-wrapper.properties..."
+            cat << 'EOF' > gradle/wrapper/gradle-wrapper.properties
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-9.3.1-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+EOF
           fi
 
-      - name: Khởi tạo tệp môi trường .env
-        working-directory: ${{ steps.locate_project.outputs.project_dir }}
-        run: |
-          if [ -f .env.example ]; then
-            cp .env.example .env
-          else
-            touch .env
+          # 5. Khởi tạo tệp môi trường .env nếu chưa có
+          if [ ! -f .env ]; then
+            if [ -f .env.example ]; then
+              cp .env.example .env
+            else
+              touch .env
+            fi
           fi
+
+      - name: Thiết lập Gradle và cấp quyền gradlew
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Đảm bảo có script gradlew
+        run: |
+          if [ ! -f ./gradlew ]; then
+            echo "Tạo gradlew bằng gradle wrapper..."
+            gradle wrapper --gradle-version 9.3.1
+          fi
+          chmod +x ./gradlew
 
       - name: Khôi phục debug.keystore
-        working-directory: ${{ steps.locate_project.outputs.project_dir }}
         run: |
           if [ -f debug.keystore.base64 ]; then
             echo "Đang giải mã debug.keystore từ base64..."
@@ -144,29 +158,26 @@ EOF
 
       - name: Build Debug APK
         if: "${{ github.event.inputs.build_type != 'release' }}"
-        working-directory: ${{ steps.locate_project.outputs.project_dir }}
         run: |
-          ./gradlew :app:assembleDebug --stacktrace
+          ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
       - name: Build Release APK
         if: "${{ github.event.inputs.build_type == 'release' }}"
-        working-directory: ${{ steps.locate_project.outputs.project_dir }}
         run: |
-          ./gradlew :app:assembleRelease --stacktrace || ./gradlew :app:assembleDebug --stacktrace
+          ./gradlew :app:assembleRelease --stacktrace --no-daemon || ./gradlew :app:assembleDebug --stacktrace --no-daemon
 
       - name: Xác định vị trí tệp APK
         id: find_apk
-        working-directory: ${{ steps.locate_project.outputs.project_dir }}
         run: |
           APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
           echo "Tìm thấy APK: $APK_PATH"
-          echo "apk_path=${{ steps.locate_project.outputs.project_dir }}/$APK_PATH" >> $GITHUB_OUTPUT
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
 
       - name: Tải lên Artifacts (Tải APK trực tiếp từ GitHub)
         uses: actions/upload-artifact@v4
         with:
           name: Navitel-AutoReload-PIP-APK
-          path: ${{ steps.locate_project.outputs.project_dir }}/app/build/outputs/apk/**/*.apk
+          path: app/build/outputs/apk/**/*.apk
           retention-days: 30
 
       - name: Tạo GitHub Release & Đính kèm APK (Nếu tạo tag v*)
